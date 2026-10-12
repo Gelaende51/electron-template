@@ -1,0 +1,101 @@
+# An Electron app's Windows build under Wine on a Linux runner, its suites
+# driven by Windows' own Node under Wine too, so test and app agree on every
+# path. From Lure. Works for electron-builder NSIS installers (the app is the
+# installer's app-64.7z, unpacked: a silent install under Wine left no exe).
+#
+#   wine:
+#     uses: Gelaende51/electron-template/.github/workflows/wine.yml@v0.6.0
+#     with:
+#       installer-repo: obsidianmd/obsidian-releases     # latest GitHub release …
+#       installer-pattern: 'Obsidian-[0-9.]*\.exe'        # … asset whose name matches
+#       exe: Obsidian.exe
+#       command-var: OBSIDIAN_COMMAND                     # gets "wine <path to exe>"
+#       flags-var: OBSIDIAN_EXTRA_ARGS                    # gets the Chromium flags Wine needs
+#       suites: test-a test-b
+#       run: .dev/ci-suites.sh
+#
+# Also set for the run: SUITE_NODE ("wine …/node.exe", for the run script to
+# start the suites with), WINEDEBUG=-all, and ESBUILD_BINARY_PATH when the
+# project uses esbuild (npm will not install another OS's binary even with
+# --force; it is unpacked by hand). Windows' Node writing to a pipe gets EBADF
+# under Wine: have the run script send suite output to a file.
+name: Wine
+on:
+  workflow_call:
+    inputs:
+      installer-repo: { type: string, required: true }
+      installer-pattern: { type: string, required: true }
+      exe: { type: string, required: true }
+      command-var: { type: string, required: true }
+      flags-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  wine:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: Wine, the app and Windows' Node
+        env:
+          REPO: ${{ inputs.installer-repo }}
+          PATTERN: ${{ inputs.installer-pattern }}
+          EXE: ${{ inputs.exe }}
+          NODE_MAJOR: ${{ inputs.node-version }}
+        run: |
+          # WineHQ's staging build: Ubuntu's Wine 9 started an Electron app and
+          # then never answered on its debugging port.
+          sudo dpkg --add-architecture i386
+          sudo mkdir -pm755 /etc/apt/keyrings
+          sudo wget -qO /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key
+          sudo wget -qNP /etc/apt/sources.list.d/ "https://dl.winehq.org/wine-builds/ubuntu/dists/$(lsb_release -cs)/winehq-$(lsb_release -cs).sources"
+          sudo apt-get update -q && sudo apt-get install -y -q --install-recommends winehq-staging xvfb p7zip-full
+          wine --version
+          export WINEPREFIX="$HOME/.wine" WINEDEBUG=-all
+          url=$(curl -s -H "authorization: Bearer ${{ github.token }}" "https://api.github.com/repos/$REPO/releases/latest" | jq -r --arg p "^$PATTERN\$" '.assets[] | select(.name | test($p)) | .browser_download_url' | head -1)
+          echo "installer: $url"
+          curl -sL "$url" -o /tmp/setup.exe
+          7z x -y -o/tmp/nsis /tmp/setup.exe >/dev/null
+          7z x -y -o"$HOME/app-win" "$(find /tmp/nsis -iname 'app-64.7z' | head -1)" >/dev/null
+          wineboot -i >/dev/null 2>&1 || true
+          exe=$(find "$HOME/app-win" -maxdepth 2 -iname "$EXE" | head -1)
+          echo "exe: $exe"
+          echo "APP_EXE=$exe" >> "$GITHUB_ENV"
+          v=$(curl -s https://nodejs.org/dist/index.json | jq -r --arg m "v$NODE_MAJOR." '[.[] | select(.version | startswith($m))][0].version')
+          curl -sL "https://nodejs.org/dist/$v/node-$v-win-x64.zip" -o /tmp/node-win.zip
+          unzip -q /tmp/node-win.zip -d "$HOME" && mv "$HOME/node-$v-win-x64" "$HOME/node-win"
+          wine "$HOME/node-win/node.exe" --version
+          echo "SUITE_NODE=wine $HOME/node-win/node.exe" >> "$GITHUB_ENV"
+          if [ -f node_modules/esbuild/package.json ]; then
+            esv=$(node -p 'require("./node_modules/esbuild/package.json").version')
+            (cd /tmp && npm pack "@esbuild/win32-x64@$esv" --silent | xargs tar -xzf)
+            echo "ESBUILD_BINARY_PATH=$(winepath -w /tmp/package/esbuild.exe)" >> "$GITHUB_ENV"
+          fi
+      - name: Run the suites
+        env:
+          WINEDEBUG: -all
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          COMMAND_VAR: ${{ inputs.command-var }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$COMMAND_VAR=wine $APP_EXE"
+          # Chromium's sandbox and GPU process are what break under Wine:
+          # Windows-only protections Wine cannot provide, and the GPU in-process.
+          export "$FLAGS_VAR=--no-sandbox --disable-gpu --disable-gpu-sandbox --in-process-gpu --disable-features=RendererCodeIntegrity,NetworkServiceSandbox"
+          eval "$RUN"
