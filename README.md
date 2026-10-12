@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.6.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.6.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.7.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.7.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -43,11 +43,13 @@ Status: 0.6.0 (phase 3 of 8). A project lists each layer it uses as its own devD
   unpacked) under WineHQ staging, the suites run by Windows' Node under Wine, the Chromium
   flags Wine needs, esbuild's Windows binary when the project uses esbuild.
 
+- `.github/workflows/snap.yml` — reusable: the app from the Snap store, the suites against it.
+
 ## Coming
 
 - Run scripts (start an app with `--remote-debugging-port`,
   Xvfb/Wayland, slowness factor).
-- Reusable workflows for Snap, Wine
+- Reusable workflows for Wine
   FreeBSD, Alpine, Nix, Wayland, limits, emulation,
   and data outside the home folder (SMB, NFS, another drive, UNC).
 - The next-Electron canary; a local container runner for private runs.

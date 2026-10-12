@@ -1,0 +1,60 @@
+# An Electron app from the Snap store, its suites run against it. From Lure.
+#
+#   snap:
+#     uses: Gelaende51/electron-template/.github/workflows/snap.yml@v0.7.0
+#     with:
+#       snap: obsidian
+#       command-var: OBSIDIAN_COMMAND   # gets /snap/bin/<snap>
+#       suites: test-a test-b
+#       run: .dev/ci-suites.sh
+#       suite-env: |
+#         OBSIDIAN_EXTRA_ARGS=--no-sandbox
+name: Snap
+on:
+  workflow_call:
+    inputs:
+      snap: { type: string, required: true }
+      classic: { type: boolean, default: true }
+      channel: { type: string, default: stable }
+      command-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  snap:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: The app from the Snap store
+        env:
+          SNAP_NAME: ${{ inputs.snap }}
+          CLASSIC: ${{ inputs.classic && '--classic' || '' }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb
+          sudo snap install "$SNAP_NAME" --channel="$CHANNEL" $CLASSIC
+          snap info "$SNAP_NAME" | head -12
+      - name: Run the suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          COMMAND_VAR: ${{ inputs.command-var }}
+          SNAP_NAME: ${{ inputs.snap }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$COMMAND_VAR=/snap/bin/$SNAP_NAME"
+          eval "$RUN"
