@@ -1,0 +1,116 @@
+# An app's data somewhere other than under the home folder: a folder outside
+# it (/srv), an SMB share and an NFS share served and mounted on the runner
+# itself, NFS on macOS, a second drive (D:), a UNC path (\\\\<machine>\\appdata,
+# the machine's own name: localhost is emptied by the URL parser). Nothing in
+# the app or its suites may assume where data is. Only the data goes there:
+# keep the app's own state (settings, caches) local — databases want locks a
+# share may not give. From Lure.
+#
+#   data-elsewhere:
+#     uses: Gelaende51/electron-template/.github/workflows/data-elsewhere.yml@v0.11.0
+#     with:
+#       parent-var: LURE_VAULT_PARENT   # gets the folder the run script puts the data in
+#       suites: test-a
+#       run: .dev/ci-suites.sh
+#       suite-env: |
+#         OBSIDIAN_EXTRA_ARGS=--no-sandbox
+name: Data elsewhere
+on:
+  workflow_call:
+    inputs:
+      parent-var: { type: string, required: true }
+      places: { type: string, default: '["srv", "smb", "nfs", "nfs-mac", "drive", "unc"]' }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  # Only the places asked for: matrix `include` entries that match nothing
+  # would otherwise come back as jobs of their own.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          PLACES: ${{ inputs.places }}
+        run: |
+          all='[{"kind":"srv","place":"outside home (/srv)","os":"ubuntu-latest"},{"kind":"smb","place":"SMB network share","os":"ubuntu-latest"},{"kind":"nfs","place":"NFS share","os":"ubuntu-latest"},{"kind":"nfs-mac","place":"NFS share on macOS","os":"macos-latest"},{"kind":"drive","place":"second drive (D:)","os":"windows-latest"},{"kind":"unc","place":"UNC share","os":"windows-latest"}]'
+          echo "include=$(jq -c --argjson want "$PLACES" '[.[] | select(.kind as $k | $want | index($k))]' <<< "$all")" >> "$GITHUB_OUTPUT"
+
+  place:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: ${{ inputs.timeout }}
+    name: data on ${{ matrix.place }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: The place
+        shell: bash
+        env:
+          PARENT_VAR: ${{ inputs.parent-var }}
+        run: |
+          case "${{ matrix.kind }}" in
+            srv)
+              sudo mkdir -p /srv/app-data && sudo chown "$USER" /srv/app-data
+              echo "$PARENT_VAR=/srv/app-data" >> "$GITHUB_ENV" ;;
+            smb)
+              sudo apt-get update -q && sudo apt-get install -y -q samba cifs-utils xvfb >/dev/null
+              sudo mkdir -p /srv/app-share && sudo chown "$USER" /srv/app-share
+              printf '[appdata]\n path = /srv/app-share\n read only = no\n guest ok = yes\n force user = %s\n' "$USER" | sudo tee -a /etc/samba/smb.conf >/dev/null
+              sudo systemctl restart smbd
+              sudo mkdir -p /mnt/app-smb
+              sudo mount -t cifs //127.0.0.1/appdata /mnt/app-smb -o guest,uid=$(id -u),gid=$(id -g),vers=3.0
+              mount | grep app-smb
+              echo "$PARENT_VAR=/mnt/app-smb" >> "$GITHUB_ENV" ;;
+            nfs)
+              sudo apt-get update -q && sudo apt-get install -y -q nfs-kernel-server nfs-common >/dev/null
+              sudo mkdir -p /srv/app-nfs && sudo chown "$USER" /srv/app-nfs
+              echo "/srv/app-nfs 127.0.0.1(rw,sync,no_subtree_check,all_squash,anonuid=$(id -u),anongid=$(id -g))" | sudo tee -a /etc/exports >/dev/null
+              sudo exportfs -ra && sudo systemctl restart nfs-kernel-server
+              sudo mkdir -p /mnt/app-nfs && sudo mount -t nfs 127.0.0.1:/srv/app-nfs /mnt/app-nfs
+              mount | grep app-nfs
+              echo "$PARENT_VAR=/mnt/app-nfs" >> "$GITHUB_ENV" ;;
+            nfs-mac)
+              mkdir -p "$HOME/app-nfs-export" "$HOME/app-nfs"
+              echo "$HOME/app-nfs-export -alldirs -mapall=$(id -u):$(id -g) localhost" | sudo tee /etc/exports >/dev/null
+              sudo nfsd enable; sudo nfsd restart; sleep 3; showmount -e localhost || true
+              sudo mount -t nfs -o resvport,nolocks,locallocks localhost:"$HOME/app-nfs-export" "$HOME/app-nfs"
+              mount | grep app-nfs
+              echo "$PARENT_VAR=$HOME/app-nfs" >> "$GITHUB_ENV" ;;
+            drive)
+              mkdir -p /d/app-data
+              echo "$PARENT_VAR=D:\\app-data" >> "$GITHUB_ENV" ;;
+            unc)
+              mkdir -p /c/app-share
+              powershell -NoProfile -Command "New-SmbShare -Name appdata -Path C:\\app-share -FullAccess Everyone | Out-Null; Get-SmbShare -Name appdata"
+              # The machine's own name, not localhost: a file:// URL keeps a
+              # real host, and localhost is emptied by the URL parser.
+              echo "$PARENT_VAR=\\\\$COMPUTERNAME\\appdata" >> "$GITHUB_ENV" ;;
+          esac
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          eval "$RUN"
