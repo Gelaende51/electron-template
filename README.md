@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.1.0 (phase 3 of 8 begun). Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.2.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.2.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -20,9 +20,16 @@ Status: 0.1.0 (phase 3 of 8 begun). Licence: AGPL-3.0 (see `LICENSE`).
   fallbacks for the `t64` renames in newer Debian/Ubuntu), a font and `fc-cache`.
   Containers run as root; slim images lack curl and fonts.
 
+- `lib/cdp-session.mjs` — one CDP session with the app's window: `connect({ pickTarget, check })`,
+  `evaluate` (awaits the page's promises, deadline, stuck-page stack sample), real key
+  presses (`pressKey(page, "ctrl+shift+F2")`, macOS Cmd/Alt mapping and editing
+  commands), `PAUSE(ms)` and `SLOW` (a slowness factor for emulated or capped machines),
+  `parkPointer`, `isPainting` (a window that stopped compositing reports nonsense
+  geometry), `asPosix`, `decodeTitle`. Env: `CDP_PORT`, `WINDOW`, `SLOW`.
+
 ## Coming
 
-- CDP session and helpers; run scripts (start an app with `--remote-debugging-port`,
+- Run scripts (start an app with `--remote-debugging-port`,
   Xvfb/Wayland, slowness factor).
 - Reusable workflows for distro containers, Flatpak (full and restricted), Snap, Wine
   (Windows Node driving the suites), FreeBSD, Alpine, Nix, Wayland, limits, emulation,

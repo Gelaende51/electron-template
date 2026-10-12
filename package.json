@@ -1,14 +1,18 @@
 {
 	"name": "electron-template",
-	"version": "0.1.0",
+	"version": "0.2.0",
 	"description": "The Electron layer: CDP test sessions, run scripts for distributions, Flatpak, Snap, Wine, FreeBSD, Alpine, Nix and Wayland, reusable system-test workflows. Builds on development-template; obsidian-plugin-template builds on it.",
 	"type": "module",
 	"bin": {
 		"electron-distro-deps": "bin/electron-distro-deps.sh"
 	},
-	"files": ["bin", "lib", ".github/workflows"],
-	"dependencies": {
-		"development-template": "github:Gelaende51/development-template#v1.0.1"
-	},
-	"license": "AGPL-3.0-only"
+	"files": [
+		"bin",
+		"lib",
+		".github/workflows"
+	],
+	"license": "AGPL-3.0-only",
+	"exports": {
+		"./cdp-session": "./lib/cdp-session.mjs"
+	}
 }
