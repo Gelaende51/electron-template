@@ -1,0 +1,59 @@
+# An Electron app from nixpkgs, its suites against it. From Lure.
+#
+#   nix:
+#     uses: Gelaende51/electron-template/.github/workflows/nix.yml@v0.9.0
+#     with:
+#       package: obsidian            # nixpkgs#<package>; unfree allowed
+#       command-var: OBSIDIAN_COMMAND
+#       suites: test-a test-b
+#       run: .dev/ci-suites.sh
+#       suite-env: |
+#         OBSIDIAN_EXTRA_ARGS=--no-sandbox
+name: Nix
+on:
+  workflow_call:
+    inputs:
+      package: { type: string, required: true }
+      command: { type: string, default: "", description: "Binary to start (default: the package name)" }
+      command-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - uses: cachix/install-nix-action@v31
+      - name: The app from nixpkgs
+        env:
+          NIXPKGS_ALLOW_UNFREE: "1"
+          PKG: ${{ inputs.package }}
+        run: |
+          nix profile install --impure "nixpkgs#$PKG"
+          sudo apt-get install -y -q xvfb
+          echo "$HOME/.nix-profile/bin" >> "$GITHUB_PATH"
+      - name: Run the suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          COMMAND_VAR: ${{ inputs.command-var }}
+          COMMAND: ${{ inputs.command || inputs.package }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$COMMAND_VAR=$COMMAND"
+          eval "$RUN"

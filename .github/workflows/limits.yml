@@ -1,0 +1,103 @@
+# An Electron app's suites on a small machine and odd displays. From Lure.
+# machine: Debian in a container capped at 1.5 GB and half a CPU, with the
+# slowness factor SLOW=3 (electron-template's cdp-session stretches every
+# wait by it). display: a 1024x600 screen, HiDPI at scale 2, and no GPU.
+#
+#   limits:
+#     uses: Gelaende51/electron-template/.github/workflows/limits.yml@v0.9.0
+#     with:
+#       flags-var: OBSIDIAN_EXTRA_ARGS   # gets --no-sandbox plus the display's flags
+#       suites: test-a test-b
+#       run: .dev/ci-suites.sh
+name: Limits
+on:
+  workflow_call:
+    inputs:
+      flags-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      toolkit-ref: { type: string, default: main, description: "electron-template ref for the dependency script" }
+
+jobs:
+  machine:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: debian:12
+      options: --shm-size=1g --memory=1500m --memory-swap=1500m --cpus=0.5
+    name: limits (1.5 GB, half a CPU)
+    steps:
+      - name: tar, for the checkout
+        run: apt-get update -q && apt-get install -y -q tar gzip curl
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Gelaende51/electron-template
+          ref: ${{ inputs.toolkit-ref }}
+          path: .electron-template
+      - name: System packages
+        run: sh .electron-template/bin/electron-distro-deps.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+          SLOW: "3"
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$FLAGS_VAR=--no-sandbox"
+          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          export DISPLAY=:99
+          eval "$RUN"
+
+  display:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: small screen 1024x600
+            screen: 1024x600x24
+            args: --no-sandbox
+          - name: HiDPI, scale 2
+            screen: 1920x1080x24
+            args: --no-sandbox --force-device-scale-factor=2
+          - name: no GPU
+            screen: 1920x1080x24
+            args: --no-sandbox --disable-gpu
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    name: limits (${{ matrix.name }})
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: Run the suites
+        env:
+          XVFB_SCREEN: ${{ matrix.screen }}
+          ARGS: ${{ matrix.args }}
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$FLAGS_VAR=$ARGS"
+          eval "$RUN"

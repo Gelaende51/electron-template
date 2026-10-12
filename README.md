@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.8.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.8.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.9.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.9.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -46,6 +46,10 @@ Status: 0.8.0 (phase 3 of 8). A project lists each layer it uses as its own devD
 - `.github/workflows/snap.yml` — reusable: the app from the Snap store, the suites against it.
 
 - `.github/workflows/wayland.yml` — reusable: headless Weston, Chromium's Ozone/Wayland flags.
+
+- `.github/workflows/nix.yml` — reusable: the app from nixpkgs (unfree allowed).
+- `.github/workflows/limits.yml` — reusable: 1.5 GB and half a CPU (`SLOW=3`), a 1024x600
+  screen, HiDPI scale 2, no GPU.
 
 ## Coming
 
