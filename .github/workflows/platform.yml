@@ -1,0 +1,62 @@
+# The suites on one GitHub runner, optionally with Node (and so the app the
+# run script fetches) of another architecture — x64 emulated on Windows on Arm
+# or under Rosetta — and a slowness factor. From Lure.
+#
+#   emulated:
+#     strategy: { fail-fast: false, matrix: { os: [windows-11-arm, macos-15] } }
+#     uses: Gelaende51/electron-template/.github/workflows/platform.yml@v0.10.0
+#     with:
+#       runs-on: ${{ matrix.os }}
+#       node-arch: x64
+#       slow: 3
+#       probe: ${{ matrix.os == 'macos-15' }}   # may fail without failing the run
+#       suites: test-a
+#       run: .dev/ci-suites.sh
+name: Platform
+on:
+  workflow_call:
+    inputs:
+      runs-on: { type: string, required: true }
+      node-arch: { type: string, default: "" }
+      slow: { type: number, default: 1 }
+      probe: { type: boolean, default: false }
+      setup: { type: string, default: "", description: "Shell run before the build (system packages)" }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  platform:
+    runs-on: ${{ inputs.runs-on }}
+    timeout-minutes: ${{ inputs.timeout }}
+    continue-on-error: ${{ inputs.probe }}
+    name: ${{ inputs.node-arch && format('{0} emulated on {1}', inputs.node-arch, inputs.runs-on) || inputs.runs-on }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          architecture: ${{ inputs.node-arch }}
+      - name: Setup
+        if: inputs.setup != ''
+        shell: bash
+        run: ${{ inputs.setup }}
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          SLOW: ${{ inputs.slow }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          node -p '"node runs as " + process.arch'
+          eval "$RUN"
