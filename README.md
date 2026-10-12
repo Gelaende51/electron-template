@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.2.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.2.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.3.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.3.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -26,6 +26,10 @@ Status: 0.2.0 (phase 3 of 8). A project lists each layer it uses as its own devD
   commands), `PAUSE(ms)` and `SLOW` (a slowness factor for emulated or capped machines),
   `parkPointer`, `isPainting` (a window that stopped compositing reports nonsense
   geometry), `asPosix`, `decodeTitle`. Env: `CDP_PORT`, `WINDOW`, `SLOW`.
+
+- `bin/electron-suites.sh` (`electron-suites`) — every suite × every app version through
+  the project's `RUN_SUITE`, under Xvfb where there is no display, reported as Actions
+  reads it (exit 2 = skipped cases, a warning) with the app log's tail on failure.
 
 ## Coming
 
