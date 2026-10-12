@@ -1,0 +1,51 @@
+# An Electron app on Wayland: a headless Weston compositor, Chromium's Ozone
+# backend, the suites against it. From Lure.
+#
+#   wayland:
+#     uses: Gelaende51/electron-template/.github/workflows/wayland.yml@v0.8.0
+#     with:
+#       flags-var: OBSIDIAN_EXTRA_ARGS   # gets --no-sandbox and the Ozone/Wayland flags
+#       suites: test-a test-b
+#       run: .dev/ci-suites.sh
+name: Wayland
+on:
+  workflow_call:
+    inputs:
+      flags-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  wayland:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: Weston, headless
+        run: sudo apt-get update -q && sudo apt-get install -y -q weston
+      - name: Run the suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$FLAGS_VAR=--no-sandbox --ozone-platform=wayland --enable-features=UseOzonePlatform,WaylandWindowDecorations"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg" && mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --socket=wayland-1 --width=1920 --height=1080 >weston.log 2>&1 &
+          sleep 3
+          export WAYLAND_DISPLAY=wayland-1
+          eval "$RUN"
