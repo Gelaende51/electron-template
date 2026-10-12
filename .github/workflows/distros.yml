@@ -1,0 +1,79 @@
+# An Electron app's test suites in distribution containers, as root, one job
+# per image, under Xvfb. From Lure (test-systems.yml, distros job). Called as:
+#
+#   distros:
+#     uses: Gelaende51/electron-template/.github/workflows/distros.yml@v0.4.0
+#     with:
+#       images: '["debian:12", "ubuntu:20.04", "fedora:42", "archlinux:latest", "opensuse/leap:16.0"]'
+#       suites: test-a test-b
+#       versions: latest
+#       run: bash .dev/ci-suites.sh        # runs $SUITES on $VERSIONS (electron-suites)
+#       suite-env: |
+#         OBSIDIAN_EXTRA_ARGS=--no-sandbox
+#
+# What each image lacks is handled here: tar for the checkout (openSUSE Leap),
+# a PATH (openSUSE declares none), Electron's libraries, a font (without one
+# text is laid out with zero height) and the t64 renames (electron-distro-deps).
+name: Distributions
+on:
+  workflow_call:
+    inputs:
+      images: { type: string, required: true, description: "JSON array of container images" }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true, description: "Command that runs $SUITES on $VERSIONS" }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "", description: "KEY=value lines for the suite step" }
+      node-version: { type: string, default: "24" }
+      toolkit-ref: { type: string, default: main, description: "electron-template ref for the dependency script" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  distro:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(inputs.images) }}
+    container:
+      image: ${{ matrix.image }}
+      options: --shm-size=2g
+    name: ${{ matrix.image }}
+    steps:
+      - name: tar, for the checkout
+        run: |
+          # An image that declares no PATH of its own (openSUSE) is left with
+          # only the tool cache once setup-node adds to it: no /usr/bin, no sh.
+          echo "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" >> "$GITHUB_PATH"
+          command -v tar >/dev/null && exit 0
+          if command -v zypper >/dev/null; then zypper --non-interactive --gpg-auto-import-keys refresh && zypper --non-interactive install bash-sh tar gzip dejavu-fonts
+          elif command -v dnf >/dev/null; then dnf install -y tar gzip
+          elif command -v pacman >/dev/null; then pacman -Sy --noconfirm tar gzip
+          else apt-get update -q && apt-get install -y -q tar gzip; fi
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Gelaende51/electron-template
+          ref: ${{ inputs.toolkit-ref }}
+          path: .electron-template
+      - name: System packages
+        run: sh .electron-template/bin/electron-distro-deps.sh
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <<< "$SUITE_ENV"
+          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          export DISPLAY=:99
+          eval "$RUN"
