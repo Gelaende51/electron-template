@@ -1,0 +1,82 @@
+# An Electron app from Flathub, its test suites run twice: with the
+# permissions it ships with, and restricted to one folder
+# (--nofilesystem=host --nofilesystem=home) — where the suites should test
+# that the app says the sandbox is why, not fail every case. From Lure.
+#
+#   flatpak:
+#     uses: Gelaende51/electron-template/.github/workflows/flatpak.yml@v0.5.0
+#     with:
+#       app-id: md.obsidian.Obsidian
+#       command-var: OBSIDIAN_COMMAND      # the run script starts the app with $OBSIDIAN_COMMAND
+#       data-dir: .cache/my-ci             # under $HOME: the one folder restricted mode can see
+#       suites: test-a test-b
+#       run: bash .dev/ci-suites.sh
+#
+# In restricted mode EXPECT_SANDBOX=1 is set (development-template's harness
+# leaves out the cases marked `outside`), plus any `restricted-env` lines. In
+# full mode TMPDIR moves under the data folder: the sandbox has a /tmp of its own.
+name: Flatpak
+on:
+  workflow_call:
+    inputs:
+      app-id: { type: string, required: true }
+      command-var: { type: string, required: true }
+      data-dir: { type: string, required: true, description: "Folder under $HOME the restricted app may see" }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      restricted-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  flatpak:
+    strategy:
+      fail-fast: false
+      matrix:
+        access: [full, restricted]
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    name: flatpak (${{ matrix.access }} access)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: The app from Flathub
+        env:
+          APP: ${{ inputs.app-id }}
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q flatpak xvfb dbus-x11
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive flathub "$APP"
+          flatpak info --user --show-permissions "$APP"
+      - name: Run the suites
+        env:
+          ACCESS: ${{ matrix.access }}
+          APP: ${{ inputs.app-id }}
+          VAR: ${{ inputs.command-var }}
+          DATA: ${{ inputs.data-dir }}
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          RESTRICTED_ENV: ${{ inputs.restricted-env }}
+          RUN: ${{ inputs.run }}
+        run: |
+          set_lines() { while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <<< "$1"; }
+          set_lines "$SUITE_ENV"
+          mkdir -p "$HOME/$DATA"
+          if [ "$ACCESS" = restricted ]; then
+            export "$VAR=flatpak run --user --nofilesystem=host --nofilesystem=home --filesystem=$HOME/$DATA $APP"
+            export EXPECT_SANDBOX=1
+            set_lines "$RESTRICTED_ENV"
+          else
+            export "$VAR=flatpak run --user $APP"
+            mkdir -p "$HOME/$DATA/tmp" && export TMPDIR="$HOME/$DATA/tmp"
+          fi
+          dbus-run-session -- bash -c "$RUN"

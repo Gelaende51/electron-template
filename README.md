@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.4.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.4.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.5.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.5.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -35,11 +35,15 @@ Status: 0.4.0 (phase 3 of 8). A project lists each layer it uses as its own devD
   per image, as root, Xvfb), with everything the slim images lack; `images`, `suites`,
   `versions`, `run`, `build`, `suite-env` as inputs.
 
+- `.github/workflows/flatpak.yml` — reusable: the app from Flathub, suites in full and in
+  restricted access (one folder only; `EXPECT_SANDBOX=1`), the run command handed over in
+  the variable the project's run script reads.
+
 ## Coming
 
 - Run scripts (start an app with `--remote-debugging-port`,
   Xvfb/Wayland, slowness factor).
-- Reusable workflows for Flatpak (full and restricted), Snap, Wine
+- Reusable workflows for Snap, Wine
   (Windows Node driving the suites), FreeBSD, Alpine, Nix, Wayland, limits, emulation,
   and data outside the home folder (SMB, NFS, another drive, UNC).
 - The next-Electron canary; a local container runner for private runs.
