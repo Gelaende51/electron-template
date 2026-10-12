@@ -1,0 +1,87 @@
+# The suites in a Windows guest (dockurr/windows over KVM on the Linux runner,
+# an evaluation install) — for Windows versions GitHub has no runner for. From
+# Lure. The project's guest scripts (`guest-scripts`, mounted as the guest's
+# /oem: install.bat runs setup) install Node and the app and run the suites;
+# they talk to this job through the shared folder (\\host.lan\Data, /mnt/shared
+# here): repo/ (the repository, without node_modules and .git), suites.txt,
+# versions.txt in; setup.log ("setup finished"), run-started.txt, results.txt
+# ("<suite> <version> <exit code>" lines; 0 passed, 2 skipped cases),
+# run-error.txt, done.txt out. Guest files are CRLF: strip \r before matching.
+#
+#   server-2019:
+#     uses: Gelaende51/electron-template/.github/workflows/windows-vm.yml@v0.12.0
+#     with:
+#       windows-version: "2019"
+#       guest-scripts: .dev/vm
+#       suites: test-a
+name: Windows VM
+on:
+  workflow_call:
+    inputs:
+      windows-version: { type: string, default: "2019" }
+      guest-scripts: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      timeout: { type: number, default: 300 }
+
+jobs:
+  windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    name: windows ${{ inputs.windows-version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Let the runner user use KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: Hand the guest the repository and what to run
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+        run: |
+          sudo mkdir -p /mnt/win /mnt/shared
+          sudo chown "$USER" /mnt/win /mnt/shared
+          rsync -a --exclude node_modules --exclude .git ./ /mnt/shared/repo/
+          echo "$SUITES" > /mnt/shared/suites.txt
+          echo "$VERSIONS" > /mnt/shared/versions.txt
+      - name: Install and start Windows (evaluation)
+        env:
+          WIN_VERSION: ${{ inputs.windows-version }}
+          OEM: ${{ inputs.guest-scripts }}
+        run: |
+          docker run -d --name windows -e VERSION="$WIN_VERSION" -e RAM_SIZE=10G -e CPU_CORES=4 -e DISK_SIZE=48G \
+            --device=/dev/kvm --device=/dev/net/tun --cap-add NET_ADMIN \
+            -v /mnt/win:/storage -v "$PWD/$OEM:/oem" -v /mnt/shared:/shared \
+            --stop-timeout 120 docker.io/dockurr/windows
+      - name: Wait for the suites in the guest
+        run: |
+          for i in $(seq 1 270); do
+            [ -f /mnt/shared/done.txt ] && break
+            # Setup reports its errors in setup.log: no use waiting past one.
+            if grep -qa "FullyQualifiedErrorId" /mnt/shared/setup.log 2>/dev/null; then
+              echo "::error::setup failed in the guest"; tr -d '\r' < /mnt/shared/setup.log; exit 1
+            fi
+            # Setup done and no run within a quarter of an hour: it is not coming.
+            if grep -qa "setup finished" /mnt/shared/setup.log 2>/dev/null && [ ! -f /mnt/shared/run-started.txt ]; then
+              setup_done=${setup_done:-$i}
+              if [ $((i - setup_done)) -ge 15 ]; then echo "::error::setup finished but the run did not start"; tr -d '\r' < /mnt/shared/setup.log; exit 1; fi
+            fi
+            if [ $((i % 10)) -eq 0 ]; then echo "--- minute $i"; docker logs --tail 3 windows 2>&1; ls /mnt/shared; fi
+            sleep 60
+          done
+          echo "--- results"; cat /mnt/shared/results.txt 2>/dev/null || echo "none"
+          [ -f /mnt/shared/run-error.txt ] && { echo "::error::the run in the guest stopped"; tr -d '\r' < /mnt/shared/run-error.txt; }
+          [ -f /mnt/shared/done.txt ] || { echo "::error::the guest did not finish"; docker logs --tail 40 windows; exit 1; }
+          ! tr -d '\r' < /mnt/shared/results.txt | grep -qvE ' (0|2)$'
+      - name: Keep the guest's logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ inputs.windows-version }}-logs
+          path: |
+            /mnt/shared/*.log
+            /mnt/shared/*.txt
+          if-no-files-found: ignore
