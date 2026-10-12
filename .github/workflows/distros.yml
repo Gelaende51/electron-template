@@ -2,7 +2,7 @@
 # per image, under Xvfb. From Lure (test-systems.yml, distros job). Called as:
 #
 #   distros:
-#     uses: Gelaende51/electron-template/.github/workflows/distros.yml@v0.4.0
+#     uses: Gelaende51/electron-template/.github/workflows/distros.yml@v0.5.1
 #     with:
 #       images: '["debian:12", "ubuntu:20.04", "fedora:42", "archlinux:latest", "opensuse/leap:16.0"]'
 #       suites: test-a test-b
@@ -73,7 +73,7 @@ jobs:
           SUITE_ENV: ${{ inputs.suite-env }}
           RUN: ${{ inputs.run }}
         run: |
-          while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <<< "$SUITE_ENV"
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
           Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
           export DISPLAY=:99
           eval "$RUN"

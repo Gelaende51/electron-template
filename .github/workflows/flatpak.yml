@@ -4,7 +4,7 @@
 # that the app says the sandbox is why, not fail every case. From Lure.
 #
 #   flatpak:
-#     uses: Gelaende51/electron-template/.github/workflows/flatpak.yml@v0.5.0
+#     uses: Gelaende51/electron-template/.github/workflows/flatpak.yml@v0.5.1
 #     with:
 #       app-id: md.obsidian.Obsidian
 #       command-var: OBSIDIAN_COMMAND      # the run script starts the app with $OBSIDIAN_COMMAND
@@ -68,7 +68,7 @@ jobs:
           RESTRICTED_ENV: ${{ inputs.restricted-env }}
           RUN: ${{ inputs.run }}
         run: |
-          set_lines() { while IFS= read -r line; do [ -n "$line" ] && export "$line"; done <<< "$1"; }
+          set_lines() { while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$1"; }
           set_lines "$SUITE_ENV"
           mkdir -p "$HOME/$DATA"
           if [ "$ACCESS" = restricted ]; then
