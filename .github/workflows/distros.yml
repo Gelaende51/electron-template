@@ -1,5 +1,6 @@
 # An Electron app's test suites in distribution containers, as root, one job
-# per image, under Xvfb. From Lure (test-systems.yml, distros job). Called as:
+# per image, under Xvfb or (display: xorg) Xorg itself. From Lure
+# (test-systems.yml, distros job). Called as:
 #
 #   distros:
 #     uses: Gelaende51/electron-template/.github/workflows/distros.yml@v0.5.1
@@ -26,6 +27,7 @@ on:
       suite-env: { type: string, default: "", description: "KEY=value lines for the suite step" }
       node-version: { type: string, default: "24" }
       toolkit-ref: { type: string, default: main, description: "electron-template ref for the dependency script" }
+      display: { type: string, default: xvfb, description: "xvfb, or xorg: Xorg itself on the distribution's dummy video driver, as its users run X" }
       timeout: { type: number, default: 150 }
 
 jobs:
@@ -71,9 +73,24 @@ jobs:
           SUITES: ${{ inputs.suites }}
           VERSIONS: ${{ inputs.versions }}
           SUITE_ENV: ${{ inputs.suite-env }}
+          DISPLAY_KIND: ${{ inputs.display }}
           RUN: ${{ inputs.run }}
         run: |
           while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
-          Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          if [ "$DISPLAY_KIND" = xorg ]; then
+            # The distribution's own Xorg on its dummy driver. A container has
+            # no virtual console: keep the tty and switch no VT.
+            if command -v apt-get >/dev/null; then apt-get install -y -q xserver-xorg-core xserver-xorg-video-dummy x11-utils >/dev/null
+            elif command -v dnf >/dev/null; then dnf install -y -q xorg-x11-server-Xorg xorg-x11-drv-dummy xdpyinfo >/dev/null
+            elif command -v pacman >/dev/null; then pacman -S --noconfirm --needed xorg-server xf86-video-dummy xorg-xdpyinfo >/dev/null
+            elif command -v zypper >/dev/null; then zypper --non-interactive install xorg-x11-server xf86-video-dummy xdpyinfo >/dev/null
+            fi
+            printf 'Section "Device"\n Identifier "dummy"\n Driver "dummy"\n VideoRam 256000\nEndSection\nSection "Monitor"\n Identifier "m"\n HorizSync 5.0-1000.0\n VertRefresh 5.0-200.0\n Modeline "1920x1080" 148.50 1920 2008 2052 2200 1080 1084 1089 1125\nEndSection\nSection "Screen"\n Identifier "s"\n Device "dummy"\n Monitor "m"\n DefaultDepth 24\n SubSection "Display"\n  Depth 24\n  Modes "1920x1080"\n EndSubSection\nEndSection\n' > /tmp/xorg.conf
+            Xorg :99 -config /tmp/xorg.conf -noreset -nolisten tcp -keeptty -novtswitch -logfile /tmp/Xorg.log >/dev/null 2>&1 &
+            for _ in $(seq 1 30); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 1; done
+            xdpyinfo -display :99 | grep -E "vendor string|dimensions" || { echo "::error::Xorg did not start"; tail -30 /tmp/Xorg.log; exit 1; }
+          else
+            Xvfb :99 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+          fi
           export DISPLAY=:99
           eval "$RUN"
