@@ -56,7 +56,7 @@ jobs:
             {"name": "mate",          "display": "xorg",    "packages": "mate-desktop-environment-core", "start": "mate-session"},
             {"name": "cinnamon",      "display": "xorg",    "packages": "cinnamon-core", "start": "cinnamon-session"},
             {"name": "lxqt",          "display": "xorg",    "packages": "lxqt-core openbox", "start": "startlxqt"},
-            {"name": "kde-x11",       "display": "xorg",    "packages": "kde-plasma-desktop", "start": "startplasma-x11"},
+            {"name": "kde-x11",       "display": "xorg",    "packages": "kde-plasma-desktop kwin-x11", "start": "startplasma-x11"},
             {"name": "gnome-x11",     "display": "xorg",    "packages": "gnome-shell", "start": "gnome-shell --x11 --replace"},
             {"name": "budgie",        "display": "xorg",    "packages": "budgie-desktop", "start": "budgie-desktop"},
             {"name": "gnome-wayland", "display": "wayland", "packages": "gnome-shell", "start": "gnome-shell --headless --wayland --no-x11 --virtual-monitor 1920x1080"},
@@ -105,6 +105,11 @@ jobs:
         run: |
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg" && mkdir -p -m 700 "$XDG_RUNTIME_DIR"
           echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          # As a login would set it: Cinnamon's window manager exits without it
+          # ("Unsupported session type").
+          [ "$DISPLAY_KIND" = xorg ] && session_type=x11 || session_type=wayland
+          export XDG_SESSION_TYPE=$session_type
+          echo "XDG_SESSION_TYPE=$session_type" >> "$GITHUB_ENV"
           # One D-Bus session for the desktop and the app alike, as at a login.
           eval "$(dbus-launch --sh-syntax)"
           echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
@@ -189,7 +194,10 @@ jobs:
     continue-on-error: ${{ inputs.arch-probes }}
     container:
       image: archlinux:latest
-      options: --shm-size=2g
+      # Hyprland needs a DRM device for its buffers even when headless; the
+      # runner has no GPU, so its container may load vkms (a virtual KMS
+      # device) from the host's modules.
+      options: --shm-size=2g ${{ matrix.session == 'hyprland' && '--privileged -v /lib/modules:/lib/modules:ro' || '' }}
     name: ${{ matrix.session }} (Arch)
     steps:
       - name: The session, the tools and a user
@@ -201,8 +209,13 @@ jobs:
             cosmic) pkgs="cosmic-comp" ;;
             *) echo "::error::no Arch session \"$SESSION\""; exit 1 ;;
           esac
-          pacman -Syu --noconfirm --needed $pkgs sway xorg-server-xvfb xorg-xauth nodejs npm git curl procps-ng tar gzip mesa ttf-dejavu dbus sudo >/dev/null
+          pacman -Syu --noconfirm --needed $pkgs sway xorg-server-xvfb xorg-xauth nodejs npm git curl procps-ng tar gzip mesa ttf-dejavu dbus sudo kmod libcap >/dev/null
           useradd -m tester
+          # Arch gives compositors file capabilities (cap_sys_nice) that a
+          # container's bounding set lacks: exec then fails with EPERM.
+          for b in /usr/bin/sway /usr/bin/Hyprland /usr/bin/cosmic-comp; do
+            if [ -e "$b" ] && [ -n "$(getcap "$b")" ]; then setcap -r "$b"; fi
+          done
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
@@ -250,9 +263,28 @@ jobs:
             ( as env WAYLAND_DISPLAY="$parent" "$@" ) >/tmp/session.log 2>&1 &
             sock=$(wait_new "$(printf '%s\n%s' "$before" "$parent")")
           }
+          # Loads vkms, makes the device nodes the container lacks, prints the
+          # vkms card (or else the first card); fails where there is none.
+          vkms() {
+            modprobe vkms >&2 || echo "no vkms module on this host" >&2
+            mkdir -p /dev/dri
+            local d n card=""
+            for d in /sys/class/drm/card[0-9]* /sys/class/drm/renderD*; do
+              [ -f "$d/dev" ] || continue
+              n=/dev/dri/$(basename "$d")
+              [ -e "$n" ] || mknod "$n" c $(tr ':' ' ' < "$d/dev")
+              chmod 666 "$n"
+              case "$(basename "$d")" in card*)
+                if [ -z "$card" ] || [ "$(basename "$(readlink -f "$d/device/driver")")" = vkms ]; then card=$n; fi ;;
+              esac
+            done
+            ls -l /dev/dri >&2 || true
+            [ -n "$card" ] && echo "$card"
+          }
           reset() {
             [ -n "$sock" ] && return
             echo "did not come up:"; tail -15 /tmp/session.log 2>/dev/null
+            find "$RT" -name hyprland.log -exec tail -25 {} \; 2>/dev/null || true
             pkill -u tester 2>/dev/null || true; pkill -f 'Xvfb :98' 2>/dev/null || true
             sleep 2; rm -rf "${RT:?}"/*
           }
@@ -260,6 +292,10 @@ jobs:
             hyprland)
               echo "trying: Hyprland on its headless backend"
               direct env HYPRLAND_HEADLESS_ONLY=1 dbus-run-session -- Hyprland; how="headless"; reset
+              if [ -z "$sock" ] && card=$(vkms); then
+                echo "trying: Hyprland headless, buffers from $card"
+                direct env HYPRLAND_HEADLESS_ONLY=1 AQ_DRM_DEVICES="$card" dbus-run-session -- Hyprland; how="headless on vkms"; reset
+              fi
               if [ -z "$sock" ]; then echo "trying: Hyprland nested in a headless Sway"; nested dbus-run-session -- Hyprland; how="nested in Sway"; reset; fi ;;
             cosmic)
               echo "trying: cosmic-comp nested on an X display"
