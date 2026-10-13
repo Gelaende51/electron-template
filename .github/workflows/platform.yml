@@ -55,6 +55,8 @@ jobs:
           VERSIONS: ${{ inputs.versions }}
           SUITE_ENV: ${{ inputs.suite-env }}
           SLOW: ${{ inputs.slow }}
+          # Read-only, for scripts that ask GitHub's API (rate limit).
+          GITHUB_TOKEN: ${{ github.token }}
           RUN: ${{ inputs.run }}
         run: |
           while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
