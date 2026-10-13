@@ -1,6 +1,6 @@
 {
 	"name": "electron-template",
-	"version": "0.18.1",
+	"version": "0.18.2",
 	"description": "The Electron layer: CDP test sessions, run scripts for distributions, Flatpak, Snap, Wine, FreeBSD, Alpine, Nix and Wayland, reusable system-test workflows. Builds on development-template; obsidian-plugin-template builds on it.",
 	"type": "module",
 	"bin": {

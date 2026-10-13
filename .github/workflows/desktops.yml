@@ -394,7 +394,7 @@ jobs:
             hyprland) pkgs="hyprland seatd" ;;
             *) echo "::error::no VM session \"$SESSION\""; exit 1 ;;
           esac
-          ssh vm "sudo pacman -Syu --noconfirm --needed $pkgs nodejs npm git curl tar gzip mesa ttf-dejavu dbus >/dev/null && sudo usermod -aG seat tester && sudo systemctl enable --now seatd && sudo loginctl enable-linger tester"
+          ssh vm "sudo pacman -Syu --noconfirm --needed $pkgs nodejs npm git curl tar gzip mesa ttf-dejavu dbus >/dev/null && sudo usermod -aG seat,video,render tester && sudo systemctl enable --now seatd && sudo loginctl enable-linger tester"
           tar -C "$GITHUB_WORKSPACE" -czf - . | ssh vm 'mkdir -p w && tar -C w -xzf -'
           ssh vm 'sudo sh w/.electron-template/bin/electron-distro-deps.sh'
       - name: Build
@@ -412,6 +412,9 @@ jobs:
           echo 'hl.config({ debug = { enable_stdout_logs = true, disable_logs = false } })' > ~/.config/hypr/hyprland.lua
           setsid -f env XDG_RUNTIME_DIR="$RT" LIBSEAT_BACKEND=seatd dbus-run-session -- Hyprland >/tmp/session.log 2>&1 < /dev/null
           for _ in $(seq 1 45); do sock=$(ls "$RT" 2>/dev/null | grep '^wayland-[0-9]*$' | head -1); [ -n "$sock" ] && break; sleep 2; done
+          # The socket comes before the renderer: a compositor that then fails
+          # (EGL without access to the card) leaves it behind.
+          [ -n "$sock" ] && sleep 5 && ! pgrep -x Hyprland >/dev/null && sock=""
           if [ -z "$sock" ]; then
             echo "::error::Hyprland did not come up in the VM"
             grep -a -v 'Creating the\|^\s*$' /tmp/session.log | tail -40
