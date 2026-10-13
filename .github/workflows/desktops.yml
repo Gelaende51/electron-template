@@ -2,8 +2,8 @@
 # display: Xorg itself (the dummy video driver, not Xvfb), the major X11
 # desktops (Xfce, MATE, Cinnamon, LXQt, KDE Plasma, GNOME, Budgie) and the
 # major Wayland compositors (GNOME's mutter, KDE's KWin, wlroots' Sway and
-# labwc, Weston), headless, on GitHub's Ubuntu runner. (Hyprland is not
-# packaged for Ubuntu 24.04; COSMIC neither.) Window
+# labwc, Weston), headless, on GitHub's Ubuntu runner; Hyprland and COSMIC,
+# which Ubuntu 24.04 does not package, in an Arch container. Window
 # managers decide focus, placement, decorations and sizes; the session brings
 # its D-Bus services (notifications, the trash through gio, portals) — what a
 # user's app actually runs among.
@@ -29,9 +29,12 @@ on:
       run: { type: string, required: true }
       sessions: { type: string, default: "" , description: "JSON array of session names; default: all" }
       probes: { type: string, default: '[]', description: "Sessions that may fail without failing the run" }
+      arch-sessions: { type: string, default: '["hyprland", "cosmic"]', description: "Compositors only Arch packages, run in an Arch container: hyprland, cosmic (JSON array; [] for none)" }
+      arch-probes: { type: boolean, default: true, description: "Arch sessions may fail without failing the run" }
       build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
       suite-env: { type: string, default: "" }
       node-version: { type: string, default: "24" }
+      toolkit-ref: { type: string, default: main, description: "electron-template ref for the dependency script (Arch job)" }
       timeout: { type: number, default: 150 }
 
 jobs:
@@ -168,3 +171,121 @@ jobs:
             ${{ runner.temp }}/session.log
             ${{ runner.temp }}/Xorg.log
           if-no-files-found: ignore
+
+  # Hyprland and COSMIC from Arch's packages, as an ordinary user (Hyprland
+  # warns as root; a desktop runs as its user). Neither documents a headless
+  # mode to rely on, so each tries the ways it may start, in order, and says
+  # which one came up: Hyprland on its own headless backend, else nested in a
+  # headless Sway; COSMIC's compositor nested on an X display (its winit/X11
+  # backend), else in a headless Sway. Rendering is Mesa's software renderer.
+  arch:
+    if: inputs.arch-sessions != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        session: ${{ fromJSON(inputs.arch-sessions) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    continue-on-error: ${{ inputs.arch-probes }}
+    container:
+      image: archlinux:latest
+      options: --shm-size=2g
+    name: ${{ matrix.session }} (Arch)
+    steps:
+      - name: The session, the tools and a user
+        env:
+          SESSION: ${{ matrix.session }}
+        run: |
+          case "$SESSION" in
+            hyprland) pkgs="hyprland" ;;
+            cosmic) pkgs="cosmic-comp" ;;
+            *) echo "::error::no Arch session \"$SESSION\""; exit 1 ;;
+          esac
+          pacman -Syu --noconfirm --needed $pkgs sway xorg-server-xvfb xorg-xauth nodejs npm git curl procps-ng tar gzip mesa ttf-dejavu dbus sudo >/dev/null
+          useradd -m tester
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Gelaende51/electron-template
+          ref: ${{ inputs.toolkit-ref }}
+          path: .electron-template
+      - name: Electron's libraries
+        run: sh .electron-template/bin/electron-distro-deps.sh
+      - name: Build
+        shell: bash
+        run: |
+          ${{ inputs.build }}
+          chown -R tester "$GITHUB_WORKSPACE"
+      - name: Start the session
+        shell: bash
+        env:
+          SESSION: ${{ matrix.session }}
+        run: |
+          RT=/tmp/xdg-tester && mkdir -p -m 700 "$RT" && chown tester "$RT"
+          echo "XDG_RUNTIME_DIR=$RT" >> "$GITHUB_ENV"
+          # As the user, software-rendered; the wlroots settings are for Sway.
+          as() { sudo -u tester env XDG_RUNTIME_DIR="$RT" LIBGL_ALWAYS_SOFTWARE=1 "$@"; }
+          sockets() { ls "$RT" 2>/dev/null | grep '^wayland-[0-9a-z-]*$' || true; }
+          # The newest socket not among $1 (a list), waited for up to 90 s.
+          wait_new() {
+            local found=""
+            for _ in $(seq 1 45); do
+              sleep 2
+              found=$(cd "$RT" && ls -t 2>/dev/null | grep '^wayland-[0-9a-z-]*$' | grep -vxF "$1" | head -1 || true)
+              [ -n "$found" ] && break
+            done
+            echo "$found"
+          }
+          sock=""
+          direct() {  # the compositor on its own
+            local before; before=$(sockets)
+            ( as "$@" ) >/tmp/session.log 2>&1 &
+            sock=$(wait_new "$before")
+          }
+          nested() {  # the compositor as a window of a headless Sway
+            local before parent; before=$(sockets)
+            ( as env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman dbus-run-session -- sway ) >/tmp/parent.log 2>&1 &
+            parent=$(wait_new "$before")
+            [ -n "$parent" ] || { echo "the headless Sway did not come up"; tail -10 /tmp/parent.log; return; }
+            ( as env WAYLAND_DISPLAY="$parent" "$@" ) >/tmp/session.log 2>&1 &
+            sock=$(wait_new "$(printf '%s\n%s' "$before" "$parent")")
+          }
+          reset() {
+            [ -n "$sock" ] && return
+            echo "did not come up:"; tail -15 /tmp/session.log 2>/dev/null
+            pkill -u tester 2>/dev/null || true; pkill -f 'Xvfb :98' 2>/dev/null || true
+            sleep 2; rm -rf "${RT:?}"/*
+          }
+          case "$SESSION" in
+            hyprland)
+              echo "trying: Hyprland on its headless backend"
+              direct env HYPRLAND_HEADLESS_ONLY=1 dbus-run-session -- Hyprland; how="headless"; reset
+              if [ -z "$sock" ]; then echo "trying: Hyprland nested in a headless Sway"; nested dbus-run-session -- Hyprland; how="nested in Sway"; reset; fi ;;
+            cosmic)
+              echo "trying: cosmic-comp nested on an X display"
+              Xvfb :98 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+              sleep 2
+              direct env DISPLAY=:98 dbus-run-session -- cosmic-comp; how="nested on X"; reset
+              if [ -z "$sock" ]; then echo "trying: cosmic-comp nested in a headless Sway"; nested dbus-run-session -- cosmic-comp; how="nested in Sway"; reset; fi ;;
+          esac
+          [ -n "$sock" ] || { echo "::error::$SESSION: no way of starting it came up"; exit 1; }
+          echo "came up: $SESSION, $how — socket $sock"
+          sleep 3
+          echo "WAYLAND_DISPLAY=$sock" >> "$GITHUB_ENV"
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+        run: |
+          {
+            while IFS= read -r line; do if [ -n "$line" ]; then printf 'export %q\n' "$line"; fi; done <<< "$SUITE_ENV"
+            printf 'export %q\n' "$FLAGS_VAR=--no-sandbox --ozone-platform=wayland --enable-features=UseOzonePlatform,WaylandWindowDecorations"
+            printf 'export SUITES=%q VERSIONS=%q XDG_RUNTIME_DIR=%q WAYLAND_DISPLAY=%q\n' "$SUITES" "$VERSIONS" "$XDG_RUNTIME_DIR" "$WAYLAND_DISPLAY"
+            printf 'cd %q\n' "$GITHUB_WORKSPACE"
+            printf '%s\n' "$RUN"
+          } > /tmp/run-suites.sh
+          sudo -u tester bash /tmp/run-suites.sh

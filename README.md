@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.16.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.16.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.17.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.17.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -68,7 +68,7 @@ Status: 0.16.0 (phase 3 of 8). A project lists each layer it uses as its own dev
 
 - `.github/workflows/desktops.yml` — reusable: the suites inside real desktop sessions —
   Xorg itself (dummy driver), Xfce, MATE, Cinnamon, LXQt, KDE Plasma, GNOME and Budgie on X11;
-  GNOME (mutter), KDE (KWin), Sway, labwc and Weston on Wayland (Hyprland and COSMIC are not packaged for Ubuntu 24.04) — each checked to be
+  GNOME (mutter), KDE (KWin), Sway, labwc and Weston on Wayland, and Hyprland and COSMIC in an Arch container (as a user, trying their headless and nested starts) — each checked to be
   up (window manager or compositor socket) before the suites run.
 
 ## Coming
