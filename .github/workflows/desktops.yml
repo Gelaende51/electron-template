@@ -31,6 +31,7 @@ on:
       probes: { type: string, default: '[]', description: "Sessions that may fail without failing the run" }
       arch-sessions: { type: string, default: '["hyprland", "cosmic"]', description: "Compositors only Arch packages, run in an Arch container: hyprland, cosmic (JSON array; [] for none)" }
       arch-probes: { type: boolean, default: true, description: "Arch sessions may fail without failing the run" }
+      vm-sessions: { type: string, default: '["hyprland"]', description: "Compositors run in an Arch VM (QEMU/KVM, virtio GPU) because they need a real DRM device: hyprland (JSON array; [] for none). Counted as probes with arch-probes" }
       build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
       suite-env: { type: string, default: "" }
       node-version: { type: string, default: "24" }
@@ -205,7 +206,7 @@ jobs:
           SESSION: ${{ matrix.session }}
         run: |
           case "$SESSION" in
-            hyprland) pkgs="hyprland" ;;
+            hyprland) pkgs="hyprland seatd" ;;
             cosmic) pkgs="cosmic-comp" ;;
             *) echo "::error::no Arch session \"$SESSION\""; exit 1 ;;
           esac
@@ -283,18 +284,28 @@ jobs:
           }
           reset() {
             [ -n "$sock" ] && return
-            echo "did not come up:"; tail -15 /tmp/session.log 2>/dev/null
+            echo "did not come up:"; grep -a -v 'Creating the\|^\s*$' /tmp/session.log 2>/dev/null | tail -25
             find "$RT" -name hyprland.log -exec tail -25 {} \; 2>/dev/null || true
             pkill -u tester 2>/dev/null || true; pkill -f 'Xvfb :98' 2>/dev/null || true
             sleep 2; rm -rf "${RT:?}"/*
           }
           case "$SESSION" in
             hyprland)
+              # Its log on stdout (it turns that off by default before the
+              # backend starts, where it fails).
+              mkdir -p /home/tester/.config/hypr
+              echo 'hl.config({ debug = { enable_stdout_logs = true, disable_logs = false } })' > /home/tester/.config/hypr/hyprland.lua
+              chown -R tester /home/tester/.config
               echo "trying: Hyprland on its headless backend"
               direct env HYPRLAND_HEADLESS_ONLY=1 dbus-run-session -- Hyprland; how="headless"; reset
+              # Even headless, Aquamarine takes its allocator from the DRM
+              # backend, which needs a card (vkms here) and a seat (seatd;
+              # a container has no logind session).
               if [ -z "$sock" ] && card=$(vkms); then
-                echo "trying: Hyprland headless, buffers from $card"
-                direct env HYPRLAND_HEADLESS_ONLY=1 AQ_DRM_DEVICES="$card" dbus-run-session -- Hyprland; how="headless on vkms"; reset
+                seatd -g tester >/tmp/seatd.log 2>&1 &
+                sleep 1
+                echo "trying: Hyprland on $card (DRM backend, seatd)"
+                direct env LIBSEAT_BACKEND=seatd AQ_DRM_DEVICES="$card" dbus-run-session -- Hyprland; how="DRM on vkms"; reset
               fi
               if [ -z "$sock" ]; then echo "trying: Hyprland nested in a headless Sway"; nested dbus-run-session -- Hyprland; how="nested in Sway"; reset; fi ;;
             cosmic)
@@ -325,3 +336,102 @@ jobs:
             printf '%s\n' "$RUN"
           } > /tmp/run-suites.sh
           sudo -u tester bash /tmp/run-suites.sh
+
+  # A compositor that wants a real DRM device and a seat even headless
+  # (Hyprland: its allocator comes from the DRM backend) runs in a VM, as
+  # Hyprland's own CI does: an Arch cloud image under KVM with a virtio GPU,
+  # seatd for the seat, the project built and its suites run over SSH.
+  vm:
+    if: inputs.vm-sessions != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        session: ${{ fromJSON(inputs.vm-sessions) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    continue-on-error: ${{ inputs.arch-probes }}
+    name: ${{ matrix.session }} (Arch VM)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: Gelaende51/electron-template
+          ref: ${{ inputs.toolkit-ref }}
+          path: .electron-template
+      - name: KVM and QEMU
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -q
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils >/dev/null
+      - name: Boot Arch
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL --retry 3 -o arch.qcow2 https://geo.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2
+          qemu-img resize -q arch.qcow2 24G
+          ssh-keygen -q -t ed25519 -N '' -f vmkey
+          printf '#cloud-config\nusers:\n  - name: tester\n    sudo: ALL=(ALL) NOPASSWD:ALL\n    shell: /bin/bash\n    ssh_authorized_keys: ["%s"]\n' "$(cat vmkey.pub)" > user-data
+          cloud-localds seed.img user-data
+          mem=$(( $(awk '/MemTotal/ {print $2}' /proc/meminfo) / 1024 * 2 / 3 ))
+          qemu-system-x86_64 -enable-kvm -cpu host -smp "$(nproc)" -m "${mem}M" \
+            -vga none -device virtio-gpu-pci -display none \
+            -drive file=arch.qcow2,if=virtio -drive file=seed.img,if=virtio,format=raw \
+            -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:2222-:22 \
+            -serial file:serial.log -daemonize
+          mkdir -p ~/.ssh
+          printf 'Host vm\n  HostName 127.0.0.1\n  Port 2222\n  User tester\n  IdentityFile %s/vmkey\n  StrictHostKeyChecking no\n  UserKnownHostsFile /dev/null\n  LogLevel ERROR\n  ServerAliveInterval 15\n' "$RUNNER_TEMP" >> ~/.ssh/config
+          for _ in $(seq 1 60); do ssh -o ConnectTimeout=5 vm true 2>/dev/null && break; sleep 5; done
+          ssh vm 'uname -r; ls -l /dev/dri' || { echo "::error::the VM did not answer"; tail -40 serial.log; exit 1; }
+      - name: The session and the tools
+        env:
+          SESSION: ${{ matrix.session }}
+        run: |
+          case "$SESSION" in
+            hyprland) pkgs="hyprland seatd" ;;
+            *) echo "::error::no VM session \"$SESSION\""; exit 1 ;;
+          esac
+          ssh vm "sudo pacman -Syu --noconfirm --needed $pkgs nodejs npm git curl tar gzip mesa ttf-dejavu dbus >/dev/null && sudo usermod -aG seat tester && sudo systemctl enable --now seatd && sudo loginctl enable-linger tester"
+          tar -C "$GITHUB_WORKSPACE" -czf - . | ssh vm 'mkdir -p w && tar -C w -xzf -'
+          ssh vm 'sudo sh w/.electron-template/bin/electron-distro-deps.sh'
+      - name: Build
+        env:
+          BUILD: ${{ inputs.build }}
+        run: printf '%s\n' "$BUILD" | ssh vm 'cd w && bash -e'
+      - name: Start the session
+        env:
+          SESSION: ${{ matrix.session }}
+        run: |
+          ssh vm 'bash -s' <<'EOF'
+          RT=/run/user/$(id -u)
+          for _ in $(seq 1 15); do [ -d "$RT" ] && break; sleep 1; done
+          mkdir -p ~/.config/hypr
+          echo 'hl.config({ debug = { enable_stdout_logs = true, disable_logs = false } })' > ~/.config/hypr/hyprland.lua
+          setsid -f env XDG_RUNTIME_DIR="$RT" LIBSEAT_BACKEND=seatd dbus-run-session -- Hyprland >/tmp/session.log 2>&1 < /dev/null
+          for _ in $(seq 1 45); do sock=$(ls "$RT" 2>/dev/null | grep '^wayland-[0-9]*$' | head -1); [ -n "$sock" ] && break; sleep 2; done
+          if [ -z "$sock" ]; then
+            echo "::error::Hyprland did not come up in the VM"
+            grep -a -v 'Creating the\|^\s*$' /tmp/session.log | tail -40
+            exit 1
+          fi
+          echo "came up: Hyprland on the VM's virtio GPU — socket $sock"
+          echo "$sock" > ~/wayland-socket
+          EOF
+      - name: Run the suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          RUN: ${{ inputs.run }}
+        run: |
+          {
+            while IFS= read -r line; do if [ -n "$line" ]; then printf 'export %q\n' "$line"; fi; done <<< "$SUITE_ENV"
+            printf 'export %q\n' "$FLAGS_VAR=--no-sandbox --ozone-platform=wayland --enable-features=UseOzonePlatform,WaylandWindowDecorations"
+            printf 'export SUITES=%q VERSIONS=%q\n' "$SUITES" "$VERSIONS"
+            printf 'export XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=$(cat ~/wayland-socket)\n'
+            printf 'cd ~/w\n'
+            printf '%s\n' "$RUN"
+          } | ssh vm 'bash -s'
+      - name: The compositor's log
+        if: failure()
+        run: ssh vm 'grep -a -v "Creating the\|^\s*$" /tmp/session.log | tail -40' || true
