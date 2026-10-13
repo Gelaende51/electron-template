@@ -68,7 +68,7 @@ Status: 0.17.0 (phase 3 of 8). A project lists each layer it uses as its own dev
 
 - `.github/workflows/desktops.yml` — reusable: the suites inside real desktop sessions —
   Xorg itself (dummy driver), Xfce, MATE, Cinnamon, LXQt, KDE Plasma, GNOME and Budgie on X11;
-  GNOME (mutter), KDE (KWin), Sway, labwc and Weston on Wayland, and Hyprland and COSMIC in an Arch container (as a user, trying their headless and nested starts; Hyprland also on a virtual KMS device, vkms, with seatd), and Hyprland in an Arch VM (QEMU/KVM with a virtio GPU, as Hyprland's own CI runs it) — each checked to be
+  GNOME (mutter), KDE (KWin), Sway, labwc and Weston on Wayland, and Hyprland and COSMIC in an Arch container (as a user, trying their headless and nested starts; Hyprland on the runner's DRM card with seatd), and, as a backup that never fails the run, Hyprland in an Arch VM (QEMU/KVM with a virtio GPU, as Hyprland's own CI runs it) — each checked to be
   up (window manager or compositor socket) before the suites run.
 
 ## Coming

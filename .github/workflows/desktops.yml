@@ -31,7 +31,7 @@ on:
       probes: { type: string, default: '[]', description: "Sessions that may fail without failing the run" }
       arch-sessions: { type: string, default: '["hyprland", "cosmic"]', description: "Compositors only Arch packages, run in an Arch container: hyprland, cosmic (JSON array; [] for none)" }
       arch-probes: { type: boolean, default: true, description: "Arch sessions may fail without failing the run" }
-      vm-sessions: { type: string, default: '["hyprland"]', description: "Compositors run in an Arch VM (QEMU/KVM, virtio GPU) because they need a real DRM device: hyprland (JSON array; [] for none). Counted as probes with arch-probes" }
+      vm-sessions: { type: string, default: '["hyprland"]', description: "Backup for compositors that need a real DRM device: also run them in an Arch VM (QEMU/KVM, virtio GPU): hyprland (JSON array; [] for none). Never fails the run; the Arch container is the primary route" }
       build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
       suite-env: { type: string, default: "" }
       node-version: { type: string, default: "24" }
@@ -344,10 +344,13 @@ jobs:
           fi
           sudo -u tester bash /tmp/run-suites.sh
 
-  # A compositor that wants a real DRM device and a seat even headless
-  # (Hyprland: its allocator comes from the DRM backend) runs in a VM, as
-  # Hyprland's own CI does: an Arch cloud image under KVM with a virtio GPU,
-  # seatd for the seat, the project built and its suites run over SSH.
+  # Backup route. A compositor that wants a real DRM device and a seat even
+  # headless (Hyprland: its allocator comes from the DRM backend) runs in the
+  # Arch container on the runner's own card with seatd; GitHub could take
+  # that card away (a different host, a kernel without it). This job keeps a
+  # second, independent reading: a VM, as Hyprland's own CI runs it, an Arch
+  # cloud image under KVM with a virtio GPU, seatd for the seat, the project
+  # built and its suites run over SSH. Its result never fails the run.
   vm:
     if: inputs.vm-sessions != '[]'
     strategy:
@@ -356,8 +359,8 @@ jobs:
         session: ${{ fromJSON(inputs.vm-sessions) }}
     runs-on: ubuntu-latest
     timeout-minutes: ${{ inputs.timeout }}
-    continue-on-error: ${{ inputs.arch-probes }}
-    name: ${{ matrix.session }} (Arch VM)
+    continue-on-error: true
+    name: ${{ matrix.session }} (Arch VM, backup)
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
