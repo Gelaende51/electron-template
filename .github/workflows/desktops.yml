@@ -1,0 +1,165 @@
+# An Electron app's suites inside real desktop sessions, not a bare virtual
+# display: Xorg itself (the dummy video driver, not Xvfb), the major X11
+# desktops (Xfce, MATE, Cinnamon, LXQt, KDE Plasma, GNOME, Budgie) and the
+# major Wayland compositors (GNOME's mutter, KDE's KWin, wlroots' Sway and
+# labwc, Hyprland, Weston), headless, on GitHub's Ubuntu runner. Window
+# managers decide focus, placement, decorations and sizes; the session brings
+# its D-Bus services (notifications, the trash through gio, portals) — what a
+# user's app actually runs among.
+#
+# Each job checks that its session is up before the suites run — on X11 the
+# window manager named on the root window (_NET_SUPPORTING_WM_CHECK), on
+# Wayland the compositor's socket — and says which it found.
+#
+#   desktops:
+#     uses: Gelaende51/electron-template/.github/workflows/desktops.yml@v0.15.0
+#     with:
+#       flags-var: OBSIDIAN_EXTRA_ARGS   # gets --no-sandbox, plus Ozone/Wayland flags on Wayland
+#       suites: test-a
+#       run: .dev/ci-suites.sh
+#       sessions: '["xfce", "gnome-wayland"]'   # default: all of them
+name: Desktops
+on:
+  workflow_call:
+    inputs:
+      flags-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      sessions: { type: string, default: "" , description: "JSON array of session names; default: all" }
+      probes: { type: string, default: '["hyprland"]', description: "Sessions that may fail without failing the run" }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      node-version: { type: string, default: "24" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.pick.outputs.include }}
+    steps:
+      - id: pick
+        env:
+          SESSIONS: ${{ inputs.sessions }}
+          PROBES: ${{ inputs.probes }}
+        run: |
+          # name, display (xorg|wayland), Ubuntu packages, how the session starts.
+          all=$(cat <<'EOF'
+          [
+            {"name": "xorg",          "display": "xorg",    "packages": "", "start": ""},
+            {"name": "xfce",          "display": "xorg",    "packages": "xfce4", "start": "startxfce4"},
+            {"name": "mate",          "display": "xorg",    "packages": "mate-desktop-environment-core", "start": "mate-session"},
+            {"name": "cinnamon",      "display": "xorg",    "packages": "cinnamon-core", "start": "cinnamon-session"},
+            {"name": "lxqt",          "display": "xorg",    "packages": "lxqt-core openbox", "start": "startlxqt"},
+            {"name": "kde-x11",       "display": "xorg",    "packages": "kde-plasma-desktop", "start": "startplasma-x11"},
+            {"name": "gnome-x11",     "display": "xorg",    "packages": "gnome-shell", "start": "gnome-shell --x11 --replace"},
+            {"name": "budgie",        "display": "xorg",    "packages": "budgie-desktop", "start": "budgie-desktop"},
+            {"name": "gnome-wayland", "display": "wayland", "packages": "gnome-shell", "start": "gnome-shell --headless --wayland --no-x11 --virtual-monitor 1920x1080"},
+            {"name": "kde-wayland",   "display": "wayland", "packages": "kwin-wayland", "start": "kwin_wayland --virtual --width 1920 --height 1080 --no-lockscreen"},
+            {"name": "sway",          "display": "wayland", "packages": "sway", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway"},
+            {"name": "labwc",         "display": "wayland", "packages": "labwc", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman labwc"},
+            {"name": "hyprland",      "display": "wayland", "packages": "hyprland", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman Hyprland"},
+            {"name": "weston",        "display": "wayland", "packages": "weston", "start": "weston --backend=headless --width=1920 --height=1080"}
+          ]
+          EOF
+          )
+          want=${SESSIONS:-null}
+          echo "include=$(jq -c --argjson want "$want" --argjson probes "$PROBES" '[.[] | select($want == null or (.name as $n | $want | index($n))) | .probe = (.name as $n | $probes | index($n) != null)]' <<< "$all")" >> "$GITHUB_OUTPUT"
+
+  session:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.include) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.timeout }}
+    continue-on-error: ${{ matrix.probe }}
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+      - name: Build
+        run: ${{ inputs.build }}
+      - name: The session's packages
+        env:
+          PACKAGES: ${{ matrix.packages }}
+          DISPLAY_KIND: ${{ matrix.display }}
+        run: |
+          sudo apt-get update -q
+          base="dbus-x11 x11-utils xdotool"
+          [ "$DISPLAY_KIND" = xorg ] && base="$base xserver-xorg-core xserver-xorg-video-dummy xserver-xorg-input-libinput"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends $base $PACKAGES >/dev/null
+      - name: Start the session
+        env:
+          NAME: ${{ matrix.name }}
+          DISPLAY_KIND: ${{ matrix.display }}
+          START: ${{ matrix.start }}
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/xdg" && mkdir -p -m 700 "$XDG_RUNTIME_DIR"
+          echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" >> "$GITHUB_ENV"
+          # One D-Bus session for the desktop and the app alike, as at a login.
+          eval "$(dbus-launch --sh-syntax)"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          if [ "$DISPLAY_KIND" = xorg ]; then
+            # Xorg itself, on the dummy driver: the server distributions run,
+            # not Xvfb. Root, as a display manager starts it.
+            printf 'Section "Device"\n Identifier "dummy"\n Driver "dummy"\n VideoRam 256000\nEndSection\nSection "Monitor"\n Identifier "m"\n HorizSync 5.0-1000.0\n VertRefresh 5.0-200.0\n Modeline "1920x1080" 148.50 1920 2008 2052 2200 1080 1084 1089 1125\nEndSection\nSection "Screen"\n Identifier "s"\n Device "dummy"\n Monitor "m"\n DefaultDepth 24\n SubSection "Display"\n  Depth 24\n  Modes "1920x1080"\n EndSubSection\nEndSection\n' > "$RUNNER_TEMP/xorg.conf"
+            sudo Xorg :99 -config "$RUNNER_TEMP/xorg.conf" -noreset -nolisten tcp -logfile "$RUNNER_TEMP/Xorg.log" >/dev/null 2>&1 &
+            for _ in $(seq 1 30); do xdpyinfo -display :99 >/dev/null 2>&1 && break; sleep 1; done
+            xdpyinfo -display :99 | grep -E "vendor string|dimensions" || { echo "::error::Xorg did not start"; sudo tail -30 "$RUNNER_TEMP/Xorg.log"; exit 1; }
+            echo "DISPLAY=:99" >> "$GITHUB_ENV"
+            export DISPLAY=:99
+            if [ -n "$START" ]; then
+              nohup $START >"$RUNNER_TEMP/session.log" 2>&1 &
+              # The window manager announces itself on the root window.
+              for _ in $(seq 1 90); do
+                wm=$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -o '0x[0-9a-f]*')
+                [ -n "$wm" ] && name=$(xprop -id "$wm" _NET_WM_NAME 2>/dev/null | cut -d'"' -f2) && [ -n "$name" ] && break
+                sleep 2
+              done
+              [ -n "${name:-}" ] || { echo "::error::$NAME: no window manager came up"; tail -40 "$RUNNER_TEMP/session.log"; exit 1; }
+              echo "window manager: $name"
+            else
+              echo "no window manager: Xorg alone"
+            fi
+          else
+            before=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep '^wayland-[0-9a-z-]*$' || true)
+            nohup $START >"$RUNNER_TEMP/session.log" 2>&1 &
+            for _ in $(seq 1 90); do
+              sock=$(ls "$XDG_RUNTIME_DIR" 2>/dev/null | grep '^wayland-[0-9a-z-]*$' | grep -vxF "$before" | head -1)
+              [ -n "$sock" ] && break
+              sleep 2
+            done
+            [ -n "${sock:-}" ] || { echo "::error::$NAME: no Wayland socket appeared"; tail -40 "$RUNNER_TEMP/session.log"; exit 1; }
+            sleep 3
+            echo "compositor socket: $sock"
+            echo "WAYLAND_DISPLAY=$sock" >> "$GITHUB_ENV"
+          fi
+      - name: Run the suites
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          FLAGS_VAR: ${{ inputs.flags-var }}
+          DISPLAY_KIND: ${{ matrix.display }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          flags="--no-sandbox"
+          [ "$DISPLAY_KIND" = wayland ] && flags="$flags --ozone-platform=wayland --enable-features=UseOzonePlatform,WaylandWindowDecorations"
+          export "$FLAGS_VAR=$flags"
+          eval "$RUN"
+      - name: Keep the session's logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-${{ matrix.name }}-logs
+          path: |
+            ${{ runner.temp }}/session.log
+            ${{ runner.temp }}/Xorg.log
+          if-no-files-found: ignore
