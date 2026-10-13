@@ -253,15 +253,15 @@ jobs:
           sock=""
           direct() {  # the compositor on its own
             local before; before=$(sockets)
-            ( as "$@" ) >/tmp/session.log 2>&1 &
+            ( as setsid nohup "$@" ) >/tmp/session.log 2>&1 &
             sock=$(wait_new "$before")
           }
           nested() {  # the compositor as a window of a headless Sway
             local before parent; before=$(sockets)
-            ( as env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman dbus-run-session -- sway ) >/tmp/parent.log 2>&1 &
+            ( as setsid nohup env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman dbus-run-session -- sway ) >/tmp/parent.log 2>&1 &
             parent=$(wait_new "$before")
             [ -n "$parent" ] || { echo "the headless Sway did not come up"; tail -10 /tmp/parent.log; return; }
-            ( as env WAYLAND_DISPLAY="$parent" "$@" ) >/tmp/session.log 2>&1 &
+            ( as setsid nohup env WAYLAND_DISPLAY="$parent" "$@" ) >/tmp/session.log 2>&1 &
             sock=$(wait_new "$(printf '%s\n%s' "$before" "$parent")")
           }
           # Loads vkms, makes the device nodes the container lacks, prints the
@@ -310,7 +310,7 @@ jobs:
               if [ -z "$sock" ]; then echo "trying: Hyprland nested in a headless Sway"; nested dbus-run-session -- Hyprland; how="nested in Sway"; reset; fi ;;
             cosmic)
               echo "trying: cosmic-comp nested on an X display"
-              Xvfb :98 -screen 0 1920x1080x24 >/dev/null 2>&1 &
+              setsid nohup Xvfb :98 -screen 0 1920x1080x24 >/dev/null 2>&1 &
               sleep 2
               direct env DISPLAY=:98 dbus-run-session -- cosmic-comp; how="nested on X"; reset
               if [ -z "$sock" ]; then echo "trying: cosmic-comp nested in a headless Sway"; nested dbus-run-session -- cosmic-comp; how="nested in Sway"; reset; fi ;;
@@ -335,6 +335,10 @@ jobs:
             printf 'cd %q\n' "$GITHUB_WORKSPACE"
             printf '%s\n' "$RUN"
           } > /tmp/run-suites.sh
+          # A socket file outlives its compositor ("Connection refused").
+          if ! pgrep -u tester -f 'Hyprland|cosmic-comp|sway' >/dev/null; then
+            echo "::error::the compositor is gone"; grep -a -v 'Creating the\|^\s*$' /tmp/session.log | tail -30; exit 1
+          fi
           sudo -u tester bash /tmp/run-suites.sh
 
   # A compositor that wants a real DRM device and a seat even headless
