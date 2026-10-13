@@ -207,7 +207,7 @@ jobs:
         run: |
           case "$SESSION" in
             hyprland) pkgs="hyprland seatd" ;;
-            cosmic) pkgs="cosmic-comp" ;;
+            cosmic) pkgs="cosmic-comp libxkbcommon-x11" ;;
             *) echo "::error::no Arch session \"$SESSION\""; exit 1 ;;
           esac
           pacman -Syu --noconfirm --needed $pkgs sway xorg-server-xvfb xorg-xauth nodejs npm git curl procps-ng tar gzip mesa ttf-dejavu dbus sudo kmod libcap >/dev/null
@@ -282,8 +282,11 @@ jobs:
             ls -l /dev/dri >&2 || true
             [ -n "$card" ] && echo "$card"
           }
+          # The socket comes before the renderer: a compositor that fails after
+          # making it (COSMIC without DRI3 on Xvfb) is not up.
+          case "$SESSION" in hyprland) proc=Hyprland ;; *) proc=$SESSION-comp ;; esac
           reset() {
-            [ -n "$sock" ] && return
+            if [ -n "$sock" ]; then sleep 5; pgrep -u tester -x "$proc" >/dev/null && return; echo "$proc made its socket and went down"; sock=""; fi
             echo "did not come up:"; grep -a -v 'Creating the\|^\s*$' /tmp/session.log 2>/dev/null | tail -25
             find "$RT" -name hyprland.log -exec tail -25 {} \; 2>/dev/null || true
             pkill -u tester 2>/dev/null || true; pkill -f 'Xvfb :98' 2>/dev/null || true
@@ -336,7 +339,7 @@ jobs:
             printf '%s\n' "$RUN"
           } > /tmp/run-suites.sh
           # A socket file outlives its compositor ("Connection refused").
-          if ! pgrep -u tester -f 'Hyprland|cosmic-comp|sway' >/dev/null; then
+          if ! pgrep -u tester -f 'Hyprland|cosmic-comp' >/dev/null; then
             echo "::error::the compositor is gone"; grep -a -v 'Creating the\|^\s*$' /tmp/session.log | tail -30; exit 1
           fi
           sudo -u tester bash /tmp/run-suites.sh
