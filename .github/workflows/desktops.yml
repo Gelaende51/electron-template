@@ -2,7 +2,8 @@
 # display: Xorg itself (the dummy video driver, not Xvfb), the major X11
 # desktops (Xfce, MATE, Cinnamon, LXQt, KDE Plasma, GNOME, Budgie) and the
 # major Wayland compositors (GNOME's mutter, KDE's KWin, wlroots' Sway and
-# labwc, Hyprland, Weston), headless, on GitHub's Ubuntu runner. Window
+# labwc, Weston), headless, on GitHub's Ubuntu runner. (Hyprland is not
+# packaged for Ubuntu 24.04; COSMIC neither.) Window
 # managers decide focus, placement, decorations and sizes; the session brings
 # its D-Bus services (notifications, the trash through gio, portals) — what a
 # user's app actually runs among.
@@ -27,7 +28,7 @@ on:
       versions: { type: string, default: latest }
       run: { type: string, required: true }
       sessions: { type: string, default: "" , description: "JSON array of session names; default: all" }
-      probes: { type: string, default: '["hyprland"]', description: "Sessions that may fail without failing the run" }
+      probes: { type: string, default: '[]', description: "Sessions that may fail without failing the run" }
       build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
       suite-env: { type: string, default: "" }
       node-version: { type: string, default: "24" }
@@ -59,7 +60,6 @@ jobs:
             {"name": "kde-wayland",   "display": "wayland", "packages": "kwin-wayland", "start": "kwin_wayland --virtual --width 1920 --height 1080 --no-lockscreen"},
             {"name": "sway",          "display": "wayland", "packages": "sway", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman sway"},
             {"name": "labwc",         "display": "wayland", "packages": "labwc", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman labwc"},
-            {"name": "hyprland",      "display": "wayland", "packages": "hyprland", "start": "env WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman Hyprland"},
             {"name": "weston",        "display": "wayland", "packages": "weston", "start": "weston --backend=headless --width=1920 --height=1080"}
           ]
           EOF
@@ -118,8 +118,13 @@ jobs:
               nohup $START >"$RUNNER_TEMP/session.log" 2>&1 &
               # The window manager announces itself on the root window.
               for _ in $(seq 1 90); do
-                wm=$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -o '0x[0-9a-f]*')
-                [ -n "$wm" ] && name=$(xprop -id "$wm" _NET_WM_NAME 2>/dev/null | cut -d'"' -f2) && [ -n "$name" ] && break
+                # `|| true`: under bash -e a failed command substitution in an
+                # assignment ends the step — every X11 desktop stopped at its
+                # first look, before its window manager was up.
+                wm=$(xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | grep -o '0x[0-9a-f]*' || true)
+                name=""
+                [ -n "$wm" ] && name=$(xprop -id "$wm" _NET_WM_NAME 2>/dev/null | cut -d'"' -f2 || true)
+                [ -n "$name" ] && break
                 sleep 2
               done
               [ -n "${name:-}" ] || { echo "::error::$NAME: no window manager came up"; tail -40 "$RUNNER_TEMP/session.log"; exit 1; }
