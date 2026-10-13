@@ -1,0 +1,58 @@
+# An Electron app from a distribution's own package, on the system's Electron,
+# in that distribution's container (Arch's `obsidian`, for one). From Lure.
+#
+#   system-electron:
+#     uses: Gelaende51/electron-template/.github/workflows/distro-package.yml@v0.13.0
+#     with:
+#       image: archlinux:latest
+#       install: pacman -Syu --noconfirm obsidian nodejs npm git xorg-server-xvfb xorg-xauth curl procps-ng
+#       command: obsidian
+#       command-var: OBSIDIAN_COMMAND
+#       suites: test-a
+#       run: .dev/ci-suites.sh
+#       suite-env: |
+#         OBSIDIAN_EXTRA_ARGS=--no-sandbox
+name: Distribution package
+on:
+  workflow_call:
+    inputs:
+      image: { type: string, required: true }
+      install: { type: string, required: true, description: "Installs the app, Node, npm, git, Xvfb, xauth, curl, procps" }
+      command: { type: string, required: true }
+      command-var: { type: string, required: true }
+      suites: { type: string, required: true }
+      versions: { type: string, default: latest }
+      run: { type: string, required: true }
+      build: { type: string, default: "npm ci && node esbuild.config.mjs production" }
+      suite-env: { type: string, default: "" }
+      timeout: { type: number, default: 150 }
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout }}
+    container:
+      image: ${{ inputs.image }}
+      options: --shm-size=2g
+    name: ${{ inputs.image }} package
+    steps:
+      - name: The app and the tools, from the distribution
+        run: ${{ inputs.install }}
+      - uses: actions/checkout@v7
+      - name: Build
+        shell: bash
+        run: ${{ inputs.build }}
+      - name: Run the suites
+        shell: bash
+        env:
+          SUITES: ${{ inputs.suites }}
+          VERSIONS: ${{ inputs.versions }}
+          SUITE_ENV: ${{ inputs.suite-env }}
+          COMMAND_VAR: ${{ inputs.command-var }}
+          COMMAND: ${{ inputs.command }}
+          RUN: ${{ inputs.run }}
+        run: |
+          while IFS= read -r line; do if [ -n "$line" ]; then export "$line"; fi; done <<< "$SUITE_ENV"
+          export "$COMMAND_VAR=$COMMAND"
+          head -5 "$(command -v "${COMMAND%% *}")" 2>/dev/null || true
+          eval "$RUN"

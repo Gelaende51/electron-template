@@ -11,7 +11,7 @@ made from it depend on:
 
 Tooling comes from Lure (an Obsidian plugin) and moves here layer by layer.
 
-Status: 0.12.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.12.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
+Status: 0.13.0 (phase 3 of 8). A project lists each layer it uses as its own devDependency by exact tag (`…/tar.gz/refs/tags/v0.13.0`): npm 12 fetches URL dependencies only for the project itself (`allow-remote=root` in `.npmrc`), so the layers do not depend on each other through npm. Licence: AGPL-3.0 (see `LICENSE`).
 
 ## In here so far
 
@@ -62,6 +62,9 @@ Status: 0.12.0 (phase 3 of 8). A project lists each layer it uses as its own dev
 - `.github/workflows/windows-vm.yml` — reusable: the suites in a Windows guest (Server 2019
   and others GitHub has no runner for) over KVM, driven by the project's guest scripts
   through a shared folder.
+
+- `.github/workflows/distro-package.yml` — reusable: the app from a distribution's own
+  package on the system's Electron, in that distribution's container.
 
 ## Coming
 
